@@ -1,0 +1,357 @@
+---
+title: "Dissertation_code"
+output: pdf_document
+date: "2023-08-20"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(readxl)
+library(glmnet)
+library(rDEA)
+options(digits = 11)
+```
+
+```{r}
+## Inputs and outputs data
+data <- read_excel("data.xlsx") %>% data.frame()
+data_pool <- data.frame()
+for (i in 2018:2022){
+  df <- data[data$Year == i, ] %>% subset(, -Year) %>% transpose()
+  colnames(df) <- df[1, ] # the first row will be the header
+  df <- df[-1, ] # remove the first row
+  df<- df %>% mutate_if(is.character, as.numeric) # convert every character column to numeric one
+  df <- cbind(DMUs = colnames(data)[-c(1:2)], df) # get the bank names
+  df$DMUs <- paste(df$DMUs, i, sep="_")
+  # All banks group
+  data_pool <- rbind(data_pool, df)
+}
+rownames(data_pool) <- 1:nrow(data_pool)
+# SOBs group
+data_sob <- data_pool[grep('SOB', data_pool$DMUs), ]
+rownames(data_sob) <- 1:nrow(data_sob)
+# JSBs group
+data_jsb <- data_pool[grep('JSB', data_pool$DMUs), ]
+rownames(data_jsb) <- 1:nrow(data_jsb)
+# CCBs group
+data_ccb <- data_pool[grep('CCB', data_pool$DMUs), ]
+rownames(data_ccb) <- 1:nrow(data_ccb)
+```
+
+```{r}
+## Read environmental data
+data2 <- read_excel("data_env.xlsx") %>% data.frame()
+data_env <- data.frame()
+for (i in 2018:2022){
+  df <- data2[data2$Year == i, ] %>% subset(, -Year) %>% transpose()
+  colnames(df) <- df[1, ] # the first row will be the header
+  df <- df[-1, ] # remove the first row
+  df<- df %>% mutate_if(is.character, as.numeric) # convert every character column to numeric one
+  df <- cbind(DMUs = colnames(data)[-c(1:2)], df) # get the bank names
+  df$DMUs <- paste(df$DMUs, i, sep="_")
+  # All banks group
+  data_env <- rbind(data_env, df)
+}
+
+# 'SIZE' is measured by natural logarithm of total assets
+data_env$Size <- log(data_env$Size)
+rownames(data_env) <- 1:nrow(data_env)
+# SOBs group
+data_env_sob <- data_env[grep('SOB', data_env$DMUs), ]
+rownames(data_env_sob) <- 1:nrow(data_env_sob)
+# JSBs group
+data_env_jsb <- data_env[grep('JSB', data_env$DMUs), ]
+rownames(data_env_jsb) <- 1:nrow(data_env_jsb)
+# CCBs group
+data_env_ccb <- data_env[grep('CCB', data_env$DMUs), ]
+rownames(data_env_ccb) <- 1:nrow(data_env_ccb)
+```
+
+# Data Description
+
+## Inputs & Outputs
+
+```{r}
+# deposits and number of employees
+input = c(2,3)
+# loans and total other earning assets
+output = c(4,5)
+
+## Input data description
+input_des <- data.frame(
+  All = c(colMeans(data_pool[,input]), sapply(data_pool[,input], sd),
+          sapply(data_pool[,input], min), sapply(data_pool[,input], max)),
+  SOB = c(colMeans(data_sob[,input]), sapply(data_sob[,input], sd),
+          sapply(data_sob[,input], min), sapply(data_sob[,input], max)),
+  JSB = c(colMeans(data_jsb[,input]), sapply(data_jsb[,input], sd),
+          sapply(data_jsb[,input], min), sapply(data_jsb[,input], max)),
+  CCB = c(colMeans(data_ccb[,input]), sapply(data_ccb[,input], sd),
+          sapply(data_ccb[,input], min), sapply(data_ccb[,input], max))
+)
+rownames(input_des) <- c('dep_mean', 'emp_mean', 'dep_sd', 'emp_sd',
+                         'dep_min', 'emp_min', 'dep_max', 'emp_max')
+## Output data description
+output_des <- data.frame(
+  All = c(colMeans(data_pool[,output]), sapply(data_pool[,output], sd),
+          sapply(data_pool[,output], min), sapply(data_pool[,output], max)),
+  SOB = c(colMeans(data_sob[,output]), sapply(data_sob[,output], sd),
+          sapply(data_sob[,output], min), sapply(data_sob[,output], max)),
+  JSB = c(colMeans(data_jsb[,output]), sapply(data_jsb[,output], sd),
+          sapply(data_jsb[,output], min), sapply(data_jsb[,output], max)),
+  CCB = c(colMeans(data_ccb[,output]), sapply(data_ccb[,output], sd),
+          sapply(data_ccb[,output], min), sapply(data_ccb[,output], max))
+)
+rownames(output_des) <- c('loan_mean', 'oea_mean', 'loan_sd', 'oea_sd',
+                          'loan_min', 'oea_min', 'loan_max', 'oea_max')
+```
+
+```{r}
+## Correlations between input and output variables
+cor_in_out <- data.frame(row.names = c('estimate', 'p_value'))
+for (i in input){
+  for (o in output){
+    cor_pool <- cor.test(data_pool[,i], data_pool[,o])
+    cor_sob <- cor.test(data_sob[,i], data_sob[,o])
+    cor_jsb <- cor.test(data_jsb[,i], data_jsb[,o])
+    cor_ccb <- cor.test(data_ccb[,i], data_ccb[,o])
+    
+    cor_in_out <- cbind(cor_in_out, 
+                        c(cor_sob$estimate, cor_sob$p.value),
+                        c(cor_jsb$estimate, cor_jsb$p.value),
+                        c(cor_ccb$estimate, cor_ccb$p.value),
+                        c(cor_pool$estimate,cor_pool$p.value))
+  }
+}
+cor_in_out <- round(cor_in_out,4)
+
+```
+
+## Environmental Variables
+
+```{r}
+## Environmental data description
+env_des <- data.frame(
+  All = c(colMeans(data_env[,-1]), sapply(data_env[,-1], sd),
+          sapply(data_env[,-1], min), sapply(data_env[,-1], max)),
+  SOB = c(colMeans(data_env_sob[,-1]), sapply(data_env_sob[,-1], sd),
+          sapply(data_env_sob[,-1], min), sapply(data_env_sob[,-1], max)),
+  JSB = c(colMeans(data_env_jsb[,-1]), sapply(data_env_jsb[,-1], sd),
+          sapply(data_env_jsb[,-1], min), sapply(data_env_jsb[,-1], max)),
+  CCB = c(colMeans(data_env_ccb[,-1]), sapply(data_env_ccb[,-1], sd),
+          sapply(data_env_ccb[,-1], min), sapply(data_env_ccb[,-1], max))
+)
+rownames(env_des) <- c(paste(colnames(data_env)[-1], 'mean', sep='_'),
+                       paste(colnames(data_env)[-1], 'sd', sep='_'),
+                       paste(colnames(data_env)[-1], 'min', sep='_'),
+                       paste(colnames(data_env)[-1], 'max', sep='_'))
+
+```
+
+```{r}
+## Add dummy variable 'Coast' for CCBs data
+data_env_ccb[,'Coast'] <- rep(0, length(data_env_ccb$DMUs))
+for (d in c('Ningbo','Shanghai','Xiamen','Jiangsu','Nanjing')){
+  data_env_ccb$Coast[grep(d, data_env_ccb$DMUs)] <- 1
+}
+```
+
+```{r}
+## Correlations between environmental variables
+round(cor(data_env[, -1]),4)
+data_env <- select(data_env, -c('GDP','INF'))
+
+# ETA&LTD and CTI&Size are highly correlated in SOB data
+round(cor(data_env_sob[, -1]),4)
+data_env_sob <- select(data_env_sob, -c('LTD','CTI','GDP','INF'))
+
+# ETA&ITL are highly correlated in JSB data
+round(cor(data_env_jsb[, -1]),4)
+data_env_jsb <- select(data_env_jsb, -c('ETA','GDP','INF'))
+
+round(cor(data_env_ccb[, -1]),4)
+data_env_ccb <- select(data_env_ccb, -c('GDP','INF'))
+
+```
+
+# CCR MODEL
+
+## Naive model
+
+```{r}
+## Naive input-oriented DEA score
+## under constant returns-to-scale
+
+## Pooled data
+ccr_naive_pool = dea(XREF=data_pool[, input], YREF=data_pool[, output], 
+                     X=data_pool[, input], Y=data_pool[, output],
+                     model="input", RTS="constant")
+# The original efficiency score for all banks
+score_pool <- data.frame(DMUs = data_pool$DMUs, 
+                         CCR = round(ccr_naive_pool$thetaOpt,4))
+## SOB data
+ccr_naive_sob = dea(XREF=data_sob[, input], YREF=data_sob[, output], 
+                     X=data_sob[, input], Y=data_sob[, output],
+                     model="input", RTS="constant")
+# The original efficiency score for SOBs
+score_sob <- data.frame(DMUs = data_sob$DMUs, 
+                        CCR = round(ccr_naive_sob$thetaOpt,4))
+## JSB data
+ccr_naive_jsb = dea(XREF=data_jsb[, input], YREF=data_jsb[, output], 
+                     X=data_jsb[, input], Y=data_jsb[, output],
+                     model="input", RTS="constant")
+# The original efficiency score for JSBs
+score_jsb <- data.frame(DMUs = data_jsb$DMUs, 
+                        CCR = round(ccr_naive_jsb$thetaOpt,4))
+## CCB data
+ccr_naive_ccb = dea(XREF=data_ccb[, input], YREF=data_ccb[, output], 
+                     X=data_ccb[, input], Y=data_ccb[, output],
+                     model="input", RTS="constant")
+# The original efficiency score for CCBs
+score_ccb <- data.frame(DMUs = data_ccb$DMUs, 
+                        CCR = round(ccr_naive_ccb$thetaOpt,4))
+
+```
+
+## Double Bootstrap Model
+
+```{r}
+## Bias-corrected input-oriented DEA score
+## under constant returns-to-scale
+
+## Pooled data
+ccr_bc_pool <- dea.env.robust(X=data_pool[, input], Y=data_pool[, output], 
+                              Z=data_env[, -1], model="input",
+                              RTS="constant", alpha=0.05, L2 = 200)
+# The bias-corrected efficiency score for all banks
+score_pool['CCR_bc'] <- round(1/ccr_bc_pool$delta_hat_hat,4)
+
+## SOB data
+ccr_bc_sob <- dea.env.robust(X=data_sob[, input], Y=data_sob[, output], 
+                             Z=data_env_sob[, -1], model="input",
+                             RTS="constant", alpha=0.05, L2 = 200)
+# The bias-corrected efficiency score for SOBs
+score_sob['CCR_bc'] <- round(1/ccr_bc_sob$delta_hat_hat,4)
+
+## JSB data
+ccr_bc_jsb <- dea.env.robust(X=data_jsb[, input], Y=data_jsb[, output], 
+                              Z=data_env_jsb[, -1], model="input",
+                              RTS="constant", alpha=0.05, L2 = 200)
+# The bias-corrected efficiency score for JSBs
+score_jsb['CCR_bc'] <- round(1/ccr_bc_jsb$delta_hat_hat,4)
+
+## CCB data
+ccr_bc_ccb <- dea.env.robust(X=data_ccb[, input], Y=data_ccb[, output], 
+                              Z=data_env_ccb[, -1], model="input",
+                              RTS="constant", alpha=0.05, L2 = 200)
+# The bias-corrected efficiency score for CCBs
+score_ccb['CCR_bc'] <- round(1/ccr_bc_ccb$delta_hat_hat,4)
+```
+
+```{r}
+## Compute annual avearage scores based on all banks data
+# original average scores
+ccrscore_avg <- data.frame(SOB = c(1:5),
+                           JSB = c(1:5),
+                           CCB = c(1:5),
+                           All = c(1:5))
+rownames(ccrscore_avg) = c(2018:2022)
+# bias-corrected average scores
+ccrscorebc_avg <- data.frame(SOB = c(1:5),
+                           JSB = c(1:5),
+                           CCB = c(1:5),
+                           All = c(1:5))
+rownames(ccrscorebc_avg) = c(2018:2022)
+# loop over each year
+for (i in 2018:2022){
+  # loop over each category of banks
+  for (j in c('SOB','JSB','CCB')){
+    ccrscore_avg[i-2017,j] <- score_pool[
+      grep(paste(j, '_', i, sep = ''), score_pool$DMUs), 'CCR'] %>%
+      mean()
+    ccrscorebc_avg[i-2017,j] <- score_pool[
+      grep(paste(j, '_', i, sep = ''), score_pool$DMUs), 'CCR_bc'] %>%
+      mean()
+  }
+  # compute average scores for all banks 
+  ccrscore_avg[i-2017,"All"] <- score_pool[
+      grep(i, score_pool$DMUs), 'CCR'] %>%
+      mean()
+  ccrscorebc_avg[i-2017,"All"] <- score_pool[
+      grep(i, score_pool$DMUs), 'CCR_bc'] %>%
+      mean()
+}
+# compute average scores for each group
+ccrscore_avg <- rbind(ccrscore_avg, colMeans(ccrscore_avg))
+rownames(ccrscore_avg)[6] <- 'Mean'
+ccrscorebc_avg <- rbind(ccrscorebc_avg, colMeans(ccrscorebc_avg))
+rownames(ccrscorebc_avg)[6] <- 'Mean'
+
+round(ccrscore_avg,4)
+round(ccrscorebc_avg,4)
+```
+
+```{r}
+# plot the changes of annual average scores
+plot(c(2018:2022), ccrscorebc_avg$All[-6], 
+     type = 'o', ylim = c(0.85,1), pch = 3,
+     xlab = 'Year', ylab = 'Average technical efficiency')
+lines(c(2018:2022), ccrscorebc_avg$SOB[-6], type = "o", pch = 0)
+lines(c(2018:2022), ccrscorebc_avg$JSB[-6], type = "o", pch = 1)
+lines(c(2018:2022), ccrscorebc_avg$CCB[-6], type = "o", pch = 2)
+
+legend("bottomright", legend = c("All", "SOB", "JSB", "CCB"),
+       pch = c(3,0,1,2))
+```
+
+```{r}
+## Mann-whitney U test
+wilcox.test(score_pool$CCR, score_pool$CCR_bc)
+```
+
+```{r}
+## Results from DEA model using CCBs data
+# original efficient CCBs
+score_ccb$DMUs[score_ccb$CCR == 1]
+# CCBs with top 10 bias-corrected scores
+score_ccb$DMUs[order(score_ccb$CCR_bc, decreasing = TRUE)][1:10]
+
+# average original scores for coast banks and inland banks
+avg_coast <- mean(score_ccb$CCR[grep(1, data_env_ccb$Coast)])
+avg_inland <- mean(score_ccb$CCR[grep(0, data_env_ccb$Coast)])
+
+# average bias-corrected scores for coast banks and inland banks
+avgbc_coast <- mean(score_ccb$CCR_bc[grep(1, data_env_ccb$Coast)])
+avgbc_inland <- mean(score_ccb$CCR_bc[grep(0, data_env_ccb$Coast)])
+```
+
+```{r}
+## Results from DEA model using SOBs data
+score_sob$CCR[order(score_sob$CCR)]
+score_sob$DMUs[order(score_sob$CCR)]
+
+score_sob$CCR_bc[order(score_sob$CCR_bc)]
+score_sob$DMUs[order(score_sob$CCR_bc)]
+
+## Results from DEA model using JSBs data
+score_jsb$CCR[order(score_jsb$CCR)]
+score_jsb$DMUs[order(score_jsb$CCR)]
+
+score_jsb$CCR_bc[order(score_jsb$CCR_bc)]
+score_jsb$DMUs[order(score_jsb$CCR_bc)]
+
+```
+
+# Determinants
+
+```{r}
+## Obtain the coefficients of each regression
+coef_pool <- round(cbind(data.frame(CCR = ccr_bc_pool$beta_hat_hat),
+                         ccr_bc_pool$beta_ci),4)
+coef_sob <- round(cbind(data.frame(CCR = ccr_bc_sob$beta_hat_hat),
+                        ccr_bc_sob$beta_ci),4)
+coef_jsb <- round(cbind(data.frame(CCR = ccr_bc_jsb$beta_hat_hat),
+                        ccr_bc_jsb$beta_ci),4)
+coef_ccb <- round(cbind(data.frame(CCR = ccr_bc_ccb$beta_hat_hat),
+                        ccr_bc_ccb$beta_ci),4)
+```
